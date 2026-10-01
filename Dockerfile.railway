@@ -1,0 +1,73 @@
+# Railway-ready Ghost container.
+#
+# This image intentionally builds the monorepo in the container and starts Ghost
+# with Railway-friendly defaults via scripts/railway-start.sh.
+FROM node:22.13.1-bookworm-slim
+
+ENV CI=true \
+    PNPM_HOME=/root/.local/share/pnpm \
+    PATH=/root/.local/share/pnpm:$PATH
+
+WORKDIR /app
+
+# Ghost's install/build pipeline needs git for workspace metadata/submodules and
+# Python/build tooling for native dependencies such as sqlite3.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        git \
+        python3 \
+        make \
+        g++ \
+    && rm -rf /var/lib/apt/lists/* \
+    && corepack enable pnpm
+
+# Copy manifests first for better Docker layer caching on Railway.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml nx.json ./
+COPY ghost/core/package.json ghost/core/package.json
+COPY ghost/admin/package.json ghost/admin/package.json
+COPY ghost/i18n/package.json ghost/i18n/package.json
+COPY ghost/parse-email-address/package.json ghost/parse-email-address/package.json
+COPY apps/admin/package.json apps/admin/package.json
+COPY apps/admin-x-design-system/package.json apps/admin-x-design-system/package.json
+COPY apps/admin-x-framework/package.json apps/admin-x-framework/package.json
+COPY apps/admin-x-settings/package.json apps/admin-x-settings/package.json
+COPY apps/activitypub/package.json apps/activitypub/package.json
+COPY apps/admin-toolbar/package.json apps/admin-toolbar/package.json
+COPY apps/announcement-bar/package.json apps/announcement-bar/package.json
+COPY apps/comments-ui/package.json apps/comments-ui/package.json
+COPY apps/portal/package.json apps/portal/package.json
+COPY apps/posts/package.json apps/posts/package.json
+COPY apps/shade/package.json apps/shade/package.json
+COPY apps/signup-form/package.json apps/signup-form/package.json
+COPY apps/sodo-search/package.json apps/sodo-search/package.json
+COPY apps/stats/package.json apps/stats/package.json
+COPY e2e/package.json e2e/package.json
+
+RUN pnpm install --frozen-lockfile --prod=false
+
+COPY . .
+
+# Ensure default themes exist even when the Railway source checkout did not
+# initialise git submodules before Docker builds the context.
+RUN if [ ! -f ghost/core/content/themes/casper/package.json ]; then \
+        rm -rf ghost/core/content/themes/casper \
+        && git clone --depth 1 https://github.com/TryGhost/Casper.git ghost/core/content/themes/casper \
+        && git -C ghost/core/content/themes/casper fetch --depth 1 origin 01df665636b98a39aa808ebeb91ea40d216a121b \
+        && git -C ghost/core/content/themes/casper checkout 01df665636b98a39aa808ebeb91ea40d216a121b; \
+    fi \
+    && if [ ! -f ghost/core/content/themes/source/package.json ]; then \
+        rm -rf ghost/core/content/themes/source \
+        && git clone --depth 1 https://github.com/TryGhost/Source.git ghost/core/content/themes/source \
+        && git -C ghost/core/content/themes/source fetch --depth 1 origin 75f5210c471e9cf41b9c18c183649833d5ee14f5 \
+        && git -C ghost/core/content/themes/source checkout 75f5210c471e9cf41b9c18c183649833d5ee14f5; \
+    fi
+
+# Build the Ghost server/assets/admin bundle that the runtime serves.
+RUN NODE_ENV=production pnpm build:production \
+    && pnpm store prune
+
+EXPOSE 2368
+
+CMD ["bash", "scripts/railway-start.sh"]
